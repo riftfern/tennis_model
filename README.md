@@ -1,114 +1,162 @@
 # Tennis Match Prediction Model
 
-Predicting ATP tennis match outcomes is hard. Bookmaker odds imply the market is efficient, yet systematic edges exist for models that combine multiple orthogonal signals. This system identifies value betting opportunities by comparing ensemble model probabilities against market odds.
+A quantitative sports betting model that identifies edge in ATP tennis markets through ensemble prediction and Monte Carlo simulation. The system combines multiple orthogonal signals (Elo ratings, serve/return metrics, head-to-head, fatigue, surface affinity) and extends beyond simple moneyline prediction into derivative markets (spreads, totals, set betting).
 
-**Result:** +10.78% ROI, 2.60 Sharpe ratio (2019-2024 backtest, hard court, n≈800 bets)
+**Backtest Results:** +10.78% ROI, 2.60 Sharpe ratio (2019-2024, hard court, n≈800 bets)
+
+## Core Capabilities
+
+### 1. Ensemble Prediction Engine
+Combines five independent signals with learned weights to generate calibrated win probabilities:
+
+| Signal | Weight | Description |
+|--------|--------|-------------|
+| Elo Rating | 50% | Surface-specific with temporal decay and form adjustment |
+| Serve/Return | 15% | Point-level dominance metrics from match statistics |
+| Head-to-Head | 15% | Historical matchup effects and stylistic adjustments |
+| Fatigue | 10% | Schedule density, travel, and match load modeling |
+| Surface Form | 10% | Specialist vs. generalist performance patterns |
+
+### 2. Monte Carlo Simulation Engine
+Point-by-point match simulation for pricing derivative markets:
+
+```python
+# Simulate 5,000 matches at point granularity
+simulator = MatchSimulator(p_serve_a=0.65, p_serve_b=0.62, best_of=3)
+result = simulator.run(n_sims=5000)
+
+# Output distributions for:
+# - Total games (for Over/Under markets)
+# - Game differential (for Spread markets)
+# - Exact set scores (for Set Betting markets)
+```
+
+The simulator models tennis scoring rules precisely: deuce games, tiebreaks (including super-tiebreaks for Grand Slam final sets), and proper service rotation.
+
+### 3. Market Maker Module
+Converts simulation distributions into fair betting lines:
+
+```bash
+python main.py market "Sinner" "Alcaraz" --surface Hard --best-of 5
+
+# Output:
+# [MONEYLINE] Sinner: 1.86 (53.8%) | Alcaraz: 2.17
+# [SPREAD] Fair Line: Sinner +1 Games | -2.5: 42% | +2.5: 65%
+# [TOTAL] Fair Line: 41 | Over 22.5: 99.8%
+# [SETS] 3-0: 14.4% | 3-1: 19.3% | 3-2: 20.2% | ...
+```
+
+### 4. Momentum & "Vibes" Analysis
+Quantifies intangible factors that traditional models miss:
+
+| Metric | Description |
+|--------|-------------|
+| **Clutch Rating** | Tiebreak win % (last 52 weeks) — pressure performance |
+| **Grit Rating** | Deciding set win % — mental fortitude in long matches |
+| **Dominance Rating** | % of sets won 6-0, 6-1, 6-2 — "in the zone" indicator |
+| **Recent Form** | Last 5 match win % — current trajectory |
 
 ## Architecture
 
 ```
 tennis_model/
-├── main.py                     # CLI entry point
+├── main.py                         # CLI: predict, backtest, market analysis
 ├── src/
-│   ├── elo.py                  # Elo rating system
-│   ├── data_loader.py          # Data ingestion pipeline
-│   ├── backtest.py             # Backtesting engine
+│   ├── data_loader.py              # Sackmann data ingestion + odds loading
+│   ├── backtest.py                 # Chronological backtesting engine
 │   ├── ratings/
-│   │   ├── elo_enhanced.py     # Elo with temporal decay + form adjustment
-│   │   └── glicko2.py          # Glicko-2 with rating deviation tracking
+│   │   ├── elo_enhanced.py         # Elo with decay, form, K-factor scaling
+│   │   └── glicko2.py              # Glicko-2 with rating deviation
 │   ├── features/
-│   │   ├── serve_return.py     # Serve/return performance metrics
-│   │   ├── h2h.py              # Head-to-head record analysis
-│   │   ├── fatigue.py          # Match load + travel modeling
-│   │   └── surface.py          # Surface-specific performance
+│   │   ├── serve_return.py         # Rolling serve/return statistics
+│   │   ├── h2h.py                  # Head-to-head analysis
+│   │   ├── fatigue.py              # Schedule and travel modeling
+│   │   ├── surface.py              # Surface-specific performance
+│   │   └── momentum.py             # Clutch, grit, dominance tracking
 │   └── prediction/
-│       ├── ensemble.py         # Signal aggregation
-│       └── upcoming.py         # Live prediction interface
-└── data/                       # Match data (gitignored)
+│       ├── ensemble.py             # Multi-signal aggregation
+│       ├── simulation.py           # Monte Carlo match simulator
+│       ├── market_maker.py         # Fair line generation
+│       └── upcoming.py             # Live prediction interface
+└── data/                           # Match data (gitignored)
 ```
 
-## Design Decisions
+## Technical Design
 
-### Why Ensemble Over Single Model?
+### Rating System Implementation
 
-Individual signals have low correlation but moderate predictive power:
+Three rating systems with different trade-offs:
 
-| Signal | Solo Accuracy | Correlation w/ Elo |
-|--------|---------------|-------------------|
-| Elo Rating | 62.1% | 1.00 |
-| Serve Dominance | 58.3% | 0.41 |
-| Head-to-Head | 55.7% | 0.28 |
-| Fatigue Delta | 52.4% | 0.15 |
-| Surface Form | 54.2% | 0.33 |
-
-Combining uncorrelated signals reduces variance without sacrificing accuracy. The ensemble achieves 64.8% accuracy—modest, but sufficient for +EV when calibrated against market odds.
-
-### Rating System Comparison
-
-Three rating systems are implemented, each with different trade-offs:
-
-**Elo** — Simple, interpretable. Surface-specific ratings with K-factor scaling by tournament level (Grand Slam=32, Masters=28, ATP 500=24, ATP 250=20). New players get accelerated K-factor for faster convergence.
-
-**Enhanced Elo** — Addresses two Elo weaknesses:
+**Enhanced Elo** — Addresses two classic Elo weaknesses:
 - *Staleness*: Ratings decay toward 1500 after 180 days of inactivity
-- *Form blindness*: Adjusts ±50 points based on recent performance vs. expectation
+- *Form blindness*: ±50 point adjustment based on recent performance vs. expectation
 
-**Glicko-2** — Tracks rating deviation (uncertainty) alongside rating. Players with sparse match history have wider confidence intervals, producing more conservative predictions. Implements the [Glickman algorithm](http://www.glicko.net/glicko/glicko2.pdf) with volatility adaptation.
+**Glicko-2** — Tracks rating deviation (uncertainty) alongside rating. Players with sparse match history produce more conservative predictions. Implements the [Glickman algorithm](http://www.glicko.net/glicko/glicko2.pdf).
+
+**Surface-Specific** — Maintains separate Hard/Clay/Grass ratings per player. K-factors scale by tournament importance (Grand Slam: 32, Masters: 28, ATP 500: 24, ATP 250: 20).
+
+### Simulation Engine Details
+
+The Monte Carlo simulator operates at point granularity:
+
+```
+Point → Game → Set → Match
+
+For each point:
+  - Determine server (proper rotation, tiebreak rules)
+  - Sample outcome from Bernoulli(p_serve)
+  - Update game state (0-15-30-40-deuce-advantage)
+  - Handle game/set/match transitions
+```
+
+Serve probabilities are estimated by blending player service stats against opponent return stats:
+```
+P(A wins serve vs B) = 0.6 × A_serve_won% + 0.4 × (1 - B_return_won%)
+```
 
 ### Backtesting Methodology
 
-The backtest engine processes matches chronologically to prevent look-ahead bias:
+Chronological processing prevents look-ahead bias:
 
+```python
+for match in sorted_by_date(matches):
+    prediction = model.predict(match)      # Uses only prior data
+    if expected_value(prediction, odds) > threshold:
+        place_bet(match)
+    model.update(match.outcome)            # Then update ratings
 ```
-for each match in chronological order:
-    1. Generate prediction using only prior data
-    2. Compare model P(win) to implied odds probability
-    3. If EV > threshold: simulate bet
-    4. Update ratings with actual outcome
-```
-
-This mirrors live deployment conditions. Many sports models show inflated backtests due to subtle data leakage—this implementation avoids that.
-
-## Ensemble Weights
-
-| Signal | Weight | Rationale |
-|--------|--------|-----------|
-| Base Rating | 50% | Strongest individual predictor |
-| Serve/Return | 15% | Captures current form independent of opponent quality |
-| Head-to-Head | 15% | Stylistic matchup effects not captured by ratings |
-| Fatigue | 10% | Schedule density and travel affect performance |
-| Surface | 10% | Specialist vs. generalist adjustment |
-
-Final probability is logistically scaled to avoid overconfident predictions near 0/1.
 
 ## Usage
 
 ```bash
 # Install
-git clone https://github.com/riftfern/tennis_model.git && cd tennis_model
+git clone https://github.com/[username]/tennis_model.git && cd tennis_model
 pip install -r requirements.txt
 
-# Predict a match
+# Single match prediction
 python main.py predict --player-a "Sinner" --player-b "Alcaraz" --surface Hard
 
-# Predict with value detection
+# With value detection (compare to bookmaker odds)
 python main.py predict --player-a "Sinner" --player-b "Alcaraz" \
   --surface Hard --odds-a 1.65 --odds-b 2.30
 
-# Backtest
+# Full market analysis (moneyline, spread, totals, set betting)
+python main.py market "Sinner" "Alcaraz" --surface Hard --best-of 3
+
+# Historical backtest
 python main.py backtest --min-ev 7 --min-odds 1.10 --max-odds 1.60
 
-# Compare rating systems
-python main.py backtest-compare --start-year 2020
+# Player analysis
+python main.py analyze-player "Jannik Sinner"
 ```
 
 ## Backtest Results
 
-Optimal parameters found via grid search:
+Optimal parameters via grid search:
 
 | Parameter | Value |
 |-----------|-------|
-| Surface filter | Hard |
+| Surface | Hard |
 | Odds range | 1.10–1.60 |
 | Min EV threshold | 7% |
 
@@ -120,32 +168,25 @@ Optimal parameters found via grid search:
 | Sharpe ratio | 2.60 |
 | Max drawdown | -8.3% |
 
-The model performs best on hard court favorites where form signals are most reliable. Clay and grass have higher variance due to surface-specialist effects and smaller sample sizes.
-
-## Value Detection
-
-Expected value calculation:
-```
-EV = P(win) × (odds - 1) - P(loss) × 1
-```
-
-A bet is flagged when:
-1. Model probability exceeds implied probability (edge exists)
-2. EV exceeds threshold (default 7%, configurable)
-3. Odds fall within specified range (avoids extreme underdogs)
+The model performs best on hard court favorites where form signals are most reliable and market liquidity is highest.
 
 ## Data Sources
 
-- [Jeff Sackmann / Tennis Abstract](https://github.com/JeffSackmann/tennis_atp) — Historical ATP match data
-- [tennis-data.co.uk](http://tennis-data.co.uk/) — Historical bookmaker odds
-- [The Odds API](https://the-odds-api.com/) — Live odds (optional)
+- [Jeff Sackmann / Tennis Abstract](https://github.com/JeffSackmann/tennis_atp) — Historical ATP match data with point-level statistics
+- [tennis-data.co.uk](http://tennis-data.co.uk/) — Historical bookmaker odds (Pinnacle, Bet365, market average)
+- [The Odds API](https://the-odds-api.com/) — Live odds integration (optional)
 
-## Limitations
+## Limitations & Future Work
 
-- Model is trained on ATP data only; WTA would require separate calibration
-- Does not account for injuries, withdrawals, or motivation (end-of-season matches)
-- Odds data availability limits backtest to 2010+
-- Live odds integration requires API key with rate limits
+**Current limitations:**
+- ATP only; WTA would require separate calibration
+- No injury/motivation modeling
+- Serve probability estimation assumes independent points (ignores momentum within games)
+
+**Potential extensions:**
+- In-play betting using point-by-point simulation updates
+- Player embedding models for style matchup prediction
+- Bayesian ensemble weight optimization
 
 ## License
 
@@ -155,3 +196,4 @@ MIT
 
 - Jeff Sackmann for maintaining the most comprehensive public tennis dataset
 - Mark Glickman for the Glicko-2 rating system
+- Isaac Rose-Berman for insights on attacking inefficient derivative markets

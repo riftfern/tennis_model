@@ -31,6 +31,8 @@ from src.features.fatigue import FatigueTracker
 from src.features.surface import SurfaceAnalyzer
 from src.prediction.ensemble import EnsemblePredictor
 from src.prediction.upcoming import UpcomingMatchPredictor
+from src.prediction.market_maker import MarketMaker
+from src.features.momentum import MomentumTracker
 from src.backtest_enhanced import EnhancedBacktester, quick_backtest
 
 
@@ -38,7 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description='Tennis Betting Model')
     parser.add_argument('--download', action='store_true', help='Download fresh data')
     parser.add_argument('--start-year', type=int, default=2015, help='Start year for data')
-    parser.add_argument('--end-year', type=int, default=2024, help='End year for data')
+    parser.add_argument('--end-year', type=int, default=2025, help='End year for data')
     parser.add_argument('--tour', choices=['atp', 'wta', 'both'], default='atp')
     parser.add_argument('--odds-api-key', type=str, help='The Odds API key')
     args = parser.parse_args()
@@ -421,7 +423,7 @@ def run_predict():
 
     # Load training data
     print(f"\n[1] Loading training data ({args.start_year}-2024)...")
-    matches = load_matches(start_year=args.start_year, end_year=2024)
+    matches = load_matches(start_year=args.start_year, end_year=2026)
 
     if len(matches) == 0:
         print("No data found. Run: python main.py --download")
@@ -508,7 +510,7 @@ def analyze_player_cmd():
     print(f"\n=== PLAYER ANALYSIS: {args.player} ===\n")
 
     # Load data
-    matches = load_matches(start_year=args.start_year, end_year=2024)
+    matches = load_matches(start_year=args.start_year, end_year=2025)
     if len(matches) == 0:
         print("No data found.")
         return
@@ -553,6 +555,98 @@ def analyze_player_cmd():
             print(f"    BP Save: {stats.bp_save_pct*100:.1f}%")
 
 
+def analyze_market_cmd():
+    """Analyze niche markets (spreads, totals) for a specific match."""
+    parser = argparse.ArgumentParser(description='Market Analysis')
+    parser.add_argument('player_a', type=str, help='Player A name')
+    parser.add_argument('player_b', type=str, help='Player B name')
+    parser.add_argument('--surface', type=str, default='Hard', help='Surface')
+    parser.add_argument('--best-of', type=int, default=3, help='Best of sets (3 or 5)')
+    
+    import sys
+    args = parser.parse_args(sys.argv[2:])
+    
+    print(f"\n=== NICHE MARKET ANALYSIS: {args.player_a} vs {args.player_b} ===\n")
+    
+    # Load recent data for stats
+    matches = load_matches(start_year=2023, end_year=2025)
+    if len(matches) == 0:
+        print("No data found. Run --download first.")
+        return
+
+    # Build trackers
+    serve_tracker = ServeReturnTracker()
+    serve_tracker.process_matches_df(matches)
+    
+    momentum = MomentumTracker()
+    momentum.process_matches_df(matches)
+    
+    # Get stats
+    p1_stats = serve_tracker.get_player_stats(args.player_a, args.surface)
+    p2_stats = serve_tracker.get_player_stats(args.player_b, args.surface)
+    
+    p1_mom = momentum.get_momentum_stats(args.player_a)
+    p2_mom = momentum.get_momentum_stats(args.player_b)
+    
+    # Convert stats to dict
+    p1_dict = {
+        'first_serve_won_pct': p1_stats.first_serve_won_pct,
+        'second_serve_won_pct': p1_stats.second_serve_won_pct,
+        'service_points_won_pct': p1_stats.service_points_won_pct,
+        'service_hold_pct': p1_stats.service_hold_pct,
+        'return_points_won_pct': p1_stats.return_points_won_pct
+    }
+    p2_dict = {
+        'first_serve_won_pct': p2_stats.first_serve_won_pct,
+        'second_serve_won_pct': p2_stats.second_serve_won_pct,
+        'service_points_won_pct': p2_stats.service_points_won_pct,
+        'service_hold_pct': p2_stats.service_hold_pct,
+        'return_points_won_pct': p2_stats.return_points_won_pct
+    }
+    
+    # Market Maker
+    maker = MarketMaker()
+    market = maker.make_market(
+        args.player_a, 
+        args.player_b, 
+        args.surface, 
+        p1_dict, 
+        p2_dict, 
+        best_of=args.best_of
+    )
+    
+    # Display Output
+    print(f"Surface: {args.surface} | Format: Best of {args.best_of}")
+    print(f"Est. Serve Win %: {market['serve_probs'][0]*100:.1f}% vs {market['serve_probs'][1]*100:.1f}%")
+    
+    print("\n--- MOMENTUM & VIBES ---")
+    print(f"{args.player_a}: TB {p1_mom['tb_record']} | Deciders {p1_mom['decider_record']} | Dominance {p1_mom['dominance_rating']*100:.0f}% | Form {p1_mom['recent_form_rating']*100:.0f}%")
+    print(f"{args.player_b}: TB {p2_mom['tb_record']} | Deciders {p2_mom['decider_record']} | Dominance {p2_mom['dominance_rating']*100:.0f}% | Form {p2_mom['recent_form_rating']*100:.0f}%")
+    
+    print("\n--- FAIR MARKET LINES ---")
+    
+    print(f"\n[MONEYLINE]")
+    print(f"{args.player_a}: {market['moneyline']['fair_odds_a']} ({market['moneyline']['prob_a']*100:.1f}%)")
+    print(f"{args.player_b}: {market['moneyline']['fair_odds_b']}")
+    
+    print(f"\n[GAME SPREAD]")
+    spread = market['spread']['fair_handicap_a']
+    sign = "+" if spread > 0 else ""
+    print(f"Fair Line: {args.player_a} {sign}{spread} Games")
+    print(f"Alt Line (-2.5): {market['spread']['prob_cover_minus_2_5']*100:.1f}% to cover")
+    print(f"Alt Line (+2.5): {market['spread']['prob_cover_plus_2_5']*100:.1f}% to cover")
+    
+    print(f"\n[TOTAL GAMES]")
+    print(f"Fair Line: {market['total']['fair_line']}")
+    print(f"Median: {market['total']['median']}")
+    print(f"Over 22.5: {market['total']['prob_over_22_5']*100:.1f}%")
+    
+    print(f"\n[SET BETTING]")
+    for score, prob in sorted(market['sets'].items()):
+        if prob > 0:
+            print(f"{score}: {prob*100:.1f}% (Odds: {1/prob:.2f})")
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
@@ -567,6 +661,8 @@ if __name__ == "__main__":
             run_predict()
         elif cmd == 'analyze-player':
             analyze_player_cmd()
+        elif cmd == 'market':
+            analyze_market_cmd()
         else:
             main()
     else:
